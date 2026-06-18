@@ -63,6 +63,20 @@ def get_main_keyboard():
     )
     return keyboard
 
+def get_number_keyboard():
+    """Клавиатура с цифрами для ввода суммы"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
+            [KeyboardButton(text="4"), KeyboardButton(text="5"), KeyboardButton(text="6")],
+            [KeyboardButton(text="7"), KeyboardButton(text="8"), KeyboardButton(text="9")],
+            [KeyboardButton(text="0"), KeyboardButton(text="."), KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Введите сумму..."
+    )
+    return keyboard
+
 # ========== РАБОТА С ПОЛЬЗОВАТЕЛЕМ ==========
 
 async def get_or_create_user(message: types.Message):
@@ -219,7 +233,7 @@ async def process_category_selection(callback: types.CallbackQuery, state: FSMCo
 
     if callback.data == "cancel":
         await callback.message.delete()
-        await callback.bot.send_message(chat_id, "❌ Операция отменена")
+        await callback.bot.send_message(chat_id, "❌ Операция отменена", reply_markup=get_main_keyboard())
         await state.clear()
         return
 
@@ -234,11 +248,18 @@ async def process_category_selection(callback: types.CallbackQuery, state: FSMCo
     await state.set_state(AddTransaction.entering_amount)
     await callback.bot.send_message(
         chat_id,
-        "💰 Введите сумму:\n(можно использовать точку для копеек, например: 1500.50)"
+        "💰 Введите сумму (используйте кнопки ниже):",
+        reply_markup=get_number_keyboard()
     )
 
 @dp.message(AddTransaction.entering_amount)
 async def process_amount(message: types.Message, state: FSMContext):
+    # Если пользователь нажал "❌ Отмена"
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("❌ Операция отменена", reply_markup=get_main_keyboard())
+        return
+
     try:
         amount = float(message.text.replace(',', '.'))
         if amount <= 0:
@@ -252,9 +273,15 @@ async def process_amount(message: types.Message, state: FSMContext):
             await save_transaction(message, state, description='')
         else:
             await state.set_state(AddTransaction.entering_description)
-            await message.answer("📝 Введите описание (или отправьте '-' для пропуска):")
+            await message.answer(
+                "📝 Введите описание (или отправьте '-' для пропуска):",
+                reply_markup=get_main_keyboard()
+            )
     except ValueError:
-        await message.answer("❌ Неверный формат. Введите число, например: 1500 или 1500.50")
+        await message.answer(
+            "❌ Неверный формат. Введите число, например: 1500 или 1500.50",
+            reply_markup=get_number_keyboard()
+        )
 
 async def save_transaction(message: types.Message, state: FSMContext, description: str = ''):
     data = await state.get_data()
