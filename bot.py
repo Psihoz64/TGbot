@@ -181,17 +181,19 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 @dp.message(F.text == "➕ Добавить расход")
 async def add_expense(message: types.Message, state: FSMContext):
     await state.clear()
+    user_id = await get_or_create_user(message)
     await state.update_data(transaction_type='expense')
-    await show_category_selection(message, state, 'expense')
+    await show_category_selection(message, state, 'expense', user_id)
 
 @dp.message(F.text == "💳 Добавить доход")
 async def add_income(message: types.Message, state: FSMContext):
     await state.clear()
+    user_id = await get_or_create_user(message)
     await state.update_data(transaction_type='income')
-    await show_category_selection(message, state, 'income')
+    await show_category_selection(message, state, 'income', user_id)
 
-async def show_category_selection(message: types.Message, state: FSMContext, transaction_type: str):
-    user = await get_or_create_user(message)
+async def show_category_selection(message: types.Message, state: FSMContext, transaction_type: str, user_id: int):
+    categories = await get_all_categories(user_id, transaction_type) 
 
     # Получаем все категории (дефолтные + пользовательские)
     categories = await get_all_categories(user.id, transaction_type)
