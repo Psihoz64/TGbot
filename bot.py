@@ -67,20 +67,33 @@ def get_main_keyboard():
 
 async def get_or_create_user(message: types.Message):
     db = get_db()
-    # Ищем пользователя по telegram_id
     user = db.query(User).filter_by(telegram_id=message.from_user.id).first()
 
     if not user:
-        # Создаём нового пользователя с автоматическим ID
         user = User(
             telegram_id=message.from_user.id,
             username=message.from_user.username
         )
         db.add(user)
         db.commit()
-        # ... добавляем категории
+
+    # Проверяем и добавляем стандартные категории, если их нет
+    default_count = db.query(DefaultCategory).count()
+    if default_count == 0:
+        for category_type, categories in DEFAULT_CATEGORIES.items():
+            for cat in categories:
+                db_category = DefaultCategory(
+                    name=cat['name'],
+                    type=category_type,
+                    emoji=cat['emoji']
+                )
+                db.add(db_category)
+        db.commit()
+        logger.info("Default categories added to database.")
+
+    user_id = user.id
     db.close()
-    return user
+    return user_id
 
 async def get_all_categories(user_id: int, transaction_type: str = None):
     """Получает все категории для пользователя (дефолтные + пользовательские)"""
