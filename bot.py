@@ -66,34 +66,69 @@ def get_main_keyboard():
 # ========== РАБОТА С ПОЛЬЗОВАТЕЛЕМ ==========
 
 async def get_or_create_user(message: types.Message):
-    """Получает ID пользователя из БД или создаёт нового"""
     db = get_db()
+    # Ищем пользователя по telegram_id
     user = db.query(User).filter_by(telegram_id=message.from_user.id).first()
 
     if not user:
+        # Создаём нового пользователя с автоматическим ID
         user = User(
             telegram_id=message.from_user.id,
             username=message.from_user.username
         )
         db.add(user)
         db.commit()
-
-        # Добавляем стандартные категории, если они ещё не созданы
-        default_count = db.query(DefaultCategory).count()
-        if default_count == 0:
-            for category_type, categories in DEFAULT_CATEGORIES.items():
-                for cat in categories:
-                    db_category = DefaultCategory(
-                        name=cat['name'],
-                        type=category_type,
-                        emoji=cat['emoji']
-                    )
-                    db.add(db_category)
-            db.commit()
-
-    user_id = user.id
+        # ... добавляем категории
     db.close()
-    return user_id  # <-- возвращаем только ID
+    return user
+
+async def get_all_categories(user_id: int, transaction_type: str = None):
+    """Получает все категории для пользователя (дефолтные + пользовательские)"""
+    db = get_db()
+
+    # Получаем дефолтные категории
+    default_cats = db.query(DefaultCategory)
+    if transaction_type:
+        default_cats = default_cats.filter_by(type=transaction_type)
+    default_cats = default_cats.all()
+
+    # Получаем пользовательские категории
+    custom_cats = db.query(CustomCategory).filter_by(user_id=user_id)
+    if transaction_type:
+        custom_cats = custom_cats.filter_by(type=transaction_type)
+    custom_cats = custom_cats.all()
+
+    db.close()
+
+    # Отладка
+    logger.info(f"=== GET_ALL_CATEGORIES for user_id={user_id} ===")
+    logger.info(f"Default categories: {len(default_cats)}")
+    for cat in default_cats:
+        logger.info(f"  DEFAULT: {cat.emoji} {cat.name} ({cat.type})")
+    logger.info(f"Custom categories: {len(custom_cats)}")
+    for cat in custom_cats:
+        logger.info(f"  CUSTOM: {cat.emoji} {cat.name} ({cat.type})")
+
+    # Форматируем результат
+    result = []
+    for cat in default_cats:
+        result.append({
+            'id': cat.id,
+            'name': cat.name,
+            'emoji': cat.emoji,
+            'type': cat.type,
+            'source': 'default'
+        })
+    for cat in custom_cats:
+        result.append({
+            'id': cat.id,
+            'name': cat.name,
+            'emoji': cat.emoji,
+            'type': cat.type,
+            'source': 'custom'
+        })
+
+    return result
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -133,19 +168,20 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 @dp.message(F.text == "➕ Добавить расход")
 async def add_expense(message: types.Message, state: FSMContext):
     await state.clear()
-    user_id = await get_or_create_user(message)
     await state.update_data(transaction_type='expense')
-    await show_category_selection(message, state, 'expense', user_id)
+    await show_category_selection(message, state, 'expense')
 
 @dp.message(F.text == "💳 Добавить доход")
 async def add_income(message: types.Message, state: FSMContext):
     await state.clear()
-    user_id = await get_or_create_user(message)
     await state.update_data(transaction_type='income')
-    await show_category_selection(message, state, 'income', user_id)
+    await show_category_selection(message, state, 'income')
 
-async def show_category_selection(message: types.Message, state: FSMContext, transaction_type: str, user_id: int):
-    categories = await get_all_categories(user_id, transaction_type)
+async def show_category_selection(message: types.Message, state: FSMContext, transaction_type: str):
+    user = await get_or_create_user(message)
+
+    # Получаем все категории (дефолтные + пользовательские)
+    categories = await get_all_categories(user.id, transaction_type)
 
     if not categories:
         await message.answer(
@@ -157,6 +193,7 @@ async def show_category_selection(message: types.Message, state: FSMContext, tra
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     for cat in categories:
+        # Добавляем метку для пользовательских категорий
         label = f"{cat['emoji']} {cat['name']}"
         if cat['source'] == 'custom':
             label += " ✏️"
@@ -186,8 +223,9 @@ async def process_category_selection(callback: types.CallbackQuery, state: FSMCo
         await state.clear()
         return
 
+    # Разбираем callback_data: cat_{source}_{id}
     parts = callback.data.split('_')
-    source = parts[1]
+    source = parts[1]  # 'default' или 'custom'
     category_id = int(parts[2])
 
     await state.update_data(category_source=source)
@@ -219,6 +257,7 @@ async def process_amount(message: types.Message, state: FSMContext):
         await message.answer("❌ Неверный формат. Введите число, например: 1500 или 1500.50")
 
 async def save_transaction(message: types.Message, state: FSMContext, description: str = ''):
+    """Сохраняет транзакцию в базу данных"""
     data = await state.get_data()
     db = get_db()
 
@@ -232,7 +271,7 @@ async def save_transaction(message: types.Message, state: FSMContext, descriptio
 
     transaction = Transaction(
         user_id=user.id,
-        category_type=data.get('category_source'),
+        category_type=data.get('category_source'),  # 'default' или 'custom'
         category_id=data.get('category_id'),
         amount=data.get('amount'),
         type=data.get('transaction_type'),
@@ -241,6 +280,7 @@ async def save_transaction(message: types.Message, state: FSMContext, descriptio
     db.add(transaction)
     db.commit()
 
+    # Получаем название категории для отображения
     category_name = "Без категории"
     category_emoji = "📌"
 
@@ -293,6 +333,7 @@ async def process_description(message: types.Message, state: FSMContext):
 
 @dp.message(F.text.regexp(r'^[+-]\d+'))
 async def quick_add_transaction(message: types.Message):
+    """Обработка быстрого ввода: -500 Еда или +1000 Зарплата"""
     text = message.text.strip()
 
     if text.startswith('-'):
@@ -317,10 +358,12 @@ async def quick_add_transaction(message: types.Message):
             db.close()
             return
 
+        # Ищем категорию сначала среди пользовательских, потом среди дефолтных
         category = None
         category_source = None
 
         if description:
+            # Ищем в пользовательских категориях
             custom_cat = db.query(CustomCategory).filter_by(
                 user_id=user.id,
                 name=description,
@@ -331,6 +374,7 @@ async def quick_add_transaction(message: types.Message):
                 category = custom_cat
                 category_source = 'custom'
             else:
+                # Ищем в дефолтных категориях
                 default_cat = db.query(DefaultCategory).filter_by(
                     name=description,
                     type=transaction_type
@@ -339,6 +383,7 @@ async def quick_add_transaction(message: types.Message):
                     category = default_cat
                     category_source = 'default'
                 else:
+                    # Пробуем найти по частичному совпадению в пользовательских
                     custom_cats = db.query(CustomCategory).filter_by(
                         user_id=user.id,
                         type=transaction_type
@@ -350,6 +395,7 @@ async def quick_add_transaction(message: types.Message):
                             break
 
                     if not category:
+                        # Пробуем в дефолтных
                         default_cats = db.query(DefaultCategory).filter_by(
                             type=transaction_type
                         ).all()
@@ -359,6 +405,7 @@ async def quick_add_transaction(message: types.Message):
                                 category_source = 'default'
                                 break
         else:
+            # Если нет описания, используем категорию "Другое"
             custom_cat = db.query(CustomCategory).filter_by(
                 user_id=user.id,
                 name='Другое',
@@ -384,6 +431,7 @@ async def quick_add_transaction(message: types.Message):
             db.close()
             return
 
+        # Создаём транзакцию
         transaction = Transaction(
             user_id=user.id,
             category_type=category_source,
@@ -414,16 +462,17 @@ async def quick_add_transaction(message: types.Message):
 @dp.message(F.text == "📊 Баланс")
 async def show_balance(message: types.Message, state: FSMContext):
     await state.clear()
-    user_id = await get_or_create_user(message)
+    user = await get_or_create_user(message)
+
     db = get_db()
 
     total_income = db.query(Transaction).filter_by(
-        user_id=user_id, type='income'
+        user_id=user.id, type='income'
     ).with_entities(Transaction.amount).all()
     total_income = sum(t.amount for t in total_income)
 
     total_expense = db.query(Transaction).filter_by(
-        user_id=user_id, type='expense'
+        user_id=user.id, type='expense'
     ).with_entities(Transaction.amount).all()
     total_expense = sum(t.amount for t in total_expense)
 
@@ -433,7 +482,7 @@ async def show_balance(message: types.Message, state: FSMContext):
     next_month = (start_month + timedelta(days=32)).replace(day=1)
 
     month_incomes = db.query(Transaction).filter(
-        Transaction.user_id == user_id,
+        Transaction.user_id == user.id,
         Transaction.type == 'income',
         Transaction.date >= start_month,
         Transaction.date < next_month
@@ -441,7 +490,7 @@ async def show_balance(message: types.Message, state: FSMContext):
     month_incomes = sum(i.amount for i in month_incomes)
 
     month_expenses = db.query(Transaction).filter(
-        Transaction.user_id == user_id,
+        Transaction.user_id == user.id,
         Transaction.type == 'expense',
         Transaction.date >= start_month,
         Transaction.date < next_month
@@ -450,8 +499,10 @@ async def show_balance(message: types.Message, state: FSMContext):
 
     month_balance = month_incomes - month_expenses
 
+    # Получаем расходы по категориям за месяц
+    expenses_by_category = []
     transactions = db.query(Transaction).filter(
-        Transaction.user_id == user_id,
+        Transaction.user_id == user.id,
         Transaction.type == 'expense',
         Transaction.date >= start_month,
         Transaction.date < next_month
@@ -459,10 +510,13 @@ async def show_balance(message: types.Message, state: FSMContext):
 
     db.close()
 
+    # Группируем по категориям
     categories_dict = {}
     for trans in transactions:
+        # Получаем название категории
         cat_name = "Без категории"
         cat_emoji = "📌"
+
         if trans.category_type == 'default':
             db2 = get_db()
             cat = db2.query(DefaultCategory).filter_by(id=trans.category_id).first()
@@ -477,6 +531,7 @@ async def show_balance(message: types.Message, state: FSMContext):
             if cat:
                 cat_name = cat.name
                 cat_emoji = cat.emoji
+
         key = f"{cat_emoji} {cat_name}"
         categories_dict[key] = categories_dict.get(key, 0) + trans.amount
 
@@ -503,10 +558,12 @@ async def show_balance(message: types.Message, state: FSMContext):
 
 # ========== УПРАВЛЕНИЕ КАТЕГОРИЯМИ ==========
 
+# ========== УПРАВЛЕНИЕ КАТЕГОРИЯМИ ==========
+
 @dp.message(F.text == "🏷️ Категории")
 async def manage_categories(message: types.Message, state: FSMContext):
     await state.clear()
-    user_id = await get_or_create_user(message)
+    await get_or_create_user(message)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="cat_add")],
@@ -520,8 +577,17 @@ async def manage_categories(message: types.Message, state: FSMContext):
                          reply_markup=keyboard, parse_mode="Markdown")
 
 async def show_categories(message: types.Message, user_id: int = None):
+    """Показывает список категорий"""
     if user_id is None:
-        user_id = await get_or_create_user(message)
+        user = await get_or_create_user(message)
+        user_id = user.id
+    else:
+        db = get_db()
+        user = db.query(User).filter_by(id=user_id).first()
+        db.close()
+        if not user:
+            await message.answer("❌ Пользователь не найден")
+            return
 
     categories = await get_all_categories(user_id)
 
@@ -554,6 +620,7 @@ async def show_categories(message: types.Message, user_id: int = None):
     await message.answer(text, parse_mode="Markdown")
 
 async def show_categories_for_deletion(message: types.Message, state: FSMContext, user_id: int):
+    """Показывает только пользовательские категории для удаления"""
     db = get_db()
     categories = db.query(CustomCategory).filter_by(user_id=user_id).all()
     db.close()
@@ -606,6 +673,7 @@ async def process_category_action(callback: types.CallbackQuery, state: FSMConte
         await state.clear()
         return
 
+    # Получаем пользователя из callback (нажавшего кнопку)
     db = get_db()
     user = db.query(User).filter_by(telegram_id=callback.from_user.id).first()
     db.close()
@@ -696,12 +764,12 @@ async def save_new_category(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    user_id = await get_or_create_user(message)
+    user = await get_or_create_user(message)
 
     db = get_db()
 
     existing = db.query(CustomCategory).filter_by(
-        user_id=user_id,
+        user_id=user.id,
         name=name,
         type=transaction_type
     ).first()
@@ -713,7 +781,7 @@ async def save_new_category(message: types.Message, state: FSMContext):
         return
 
     category = CustomCategory(
-        user_id=user_id,
+        user_id=user.id,
         name=name,
         type=transaction_type,
         emoji="📌"
@@ -729,51 +797,16 @@ async def save_new_category(message: types.Message, state: FSMContext):
         reply_markup=get_main_keyboard()
     )
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-
-async def get_all_categories(user_id: int, transaction_type: str = None):
-    db = get_db()
-
-    default_cats = db.query(DefaultCategory)
-    if transaction_type:
-        default_cats = default_cats.filter_by(type=transaction_type)
-    default_cats = default_cats.all()
-
-    custom_cats = db.query(CustomCategory).filter_by(user_id=user_id)
-    if transaction_type:
-        custom_cats = custom_cats.filter_by(type=transaction_type)
-    custom_cats = custom_cats.all()
-
-    db.close()
-
-    result = []
-    for cat in default_cats:
-        result.append({
-            'id': cat.id,
-            'name': cat.name,
-            'emoji': cat.emoji,
-            'type': cat.type,
-            'source': 'default'
-        })
-    for cat in custom_cats:
-        result.append({
-            'id': cat.id,
-            'name': cat.name,
-            'emoji': cat.emoji,
-            'type': cat.type,
-            'source': 'custom'
-        })
-
-    return result
-
 # ========== ОТЛАДОЧНЫЕ КОМАНДЫ ==========
 
 @dp.message(Command("dbcheck"))
 async def cmd_dbcheck(message: types.Message):
-    user_id = await get_or_create_user(message)
-    categories = await get_all_categories(user_id)
+    """Проверка содержимого базы данных"""
+    user = await get_or_create_user(message)
 
-    text = f"📊 **Категории пользователя {user_id}**\n\n"
+    categories = await get_all_categories(user.id)
+
+    text = f"📊 **Категории пользователя {user.id}**\n\n"
 
     if not categories:
         text += "Нет категорий"
@@ -786,9 +819,35 @@ async def cmd_dbcheck(message: types.Message):
 
 @dp.message(Command("myid"))
 async def cmd_myid(message: types.Message):
-    user_id = await get_or_create_user(message)
-    await message.answer(f"Ваш ID в базе данных: {user_id}\nВаш Telegram ID: {message.from_user.id}")
+    """Показывает ID пользователя в базе данных"""
+    user = await get_or_create_user(message)
+    await message.answer(f"Ваш ID в базе данных: {user.id}\nВаш Telegram ID: {message.from_user.id}")
 
+@dp.message(Command("debug"))
+async def cmd_debug(message: types.Message):
+    """Диагностика категорий"""
+    user = await get_or_create_user(message)
+
+    db = get_db()
+    default_cats = db.query(DefaultCategory).all()
+    custom_cats = db.query(CustomCategory).filter_by(user_id=user.id).all()
+    db.close()
+
+    text = f"📊 **Диагностика для user_id={user.id}**\n\n"
+
+    text += f"📋 Стандартных категорий: {len(default_cats)}\n"
+    for cat in default_cats:
+        text += f"  ⭐ {cat.emoji} {cat.name} ({cat.type})\n"
+
+    text += f"\n📋 Пользовательских категорий: {len(custom_cats)}\n"
+    for cat in custom_cats:
+        text += f"  ✏️ {cat.emoji} {cat.name} ({cat.type})\n"
+
+    # Проверяем через get_all_categories
+    all_cats = await get_all_categories(user.id)
+    text += f"\n📋 Всего через get_all_categories: {len(all_cats)}"
+
+    await message.answer(text, parse_mode="Markdown")
 # ========== ЗАПУСК ==========
 
 async def main():
