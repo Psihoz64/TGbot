@@ -67,20 +67,31 @@ def get_main_keyboard():
 
 async def get_or_create_user(message: types.Message):
     db = get_db()
-    # Ищем пользователя по telegram_id
     user = db.query(User).filter_by(telegram_id=message.from_user.id).first()
 
     if not user:
-        # Создаём нового пользователя с автоматическим ID
         user = User(
             telegram_id=message.from_user.id,
             username=message.from_user.username
         )
         db.add(user)
         db.commit()
-        # ... добавляем категории
+
+        default_count = db.query(DefaultCategory).count()
+        if default_count == 0:
+            for category_type, categories in DEFAULT_CATEGORIES.items():
+                for cat in categories:
+                    db_category = DefaultCategory(
+                        name=cat['name'],
+                        type=category_type,
+                        emoji=cat['emoji']
+                    )
+                    db.add(db_category)
+            db.commit()
+
+    user_id = user.id  
     db.close()
-    return user
+    return user_id 
 
 async def get_all_categories(user_id: int, transaction_type: str = None):
     """Получает все категории для пользователя (дефолтные + пользовательские)"""
@@ -168,17 +179,19 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 @dp.message(F.text == "➕ Добавить расход")
 async def add_expense(message: types.Message, state: FSMContext):
     await state.clear()
+    user_id = await get_or_create_user(message)  # <-- получаем ID
     await state.update_data(transaction_type='expense')
-    await show_category_selection(message, state, 'expense')
+    await show_category_selection(message, state, 'expense', user_id)
 
 @dp.message(F.text == "💳 Добавить доход")
 async def add_income(message: types.Message, state: FSMContext):
     await state.clear()
+    user_id = await get_or_create_user(message)
     await state.update_data(transaction_type='income')
-    await show_category_selection(message, state, 'income')
+    await show_category_selection(message, state, 'income', user_id)
 
-async def show_category_selection(message: types.Message, state: FSMContext, transaction_type: str):
-    user = await get_or_create_user(message)
+async def show_category_selection(message: types.Message, state: FSMContext, transaction_type: str, user_id: int):
+    categories = await get_all_categories(user_id, transaction_type)
 
     # Получаем все категории (дефолтные + пользовательские)
     categories = await get_all_categories(user.id, transaction_type)
@@ -558,12 +571,10 @@ async def show_balance(message: types.Message, state: FSMContext):
 
 # ========== УПРАВЛЕНИЕ КАТЕГОРИЯМИ ==========
 
-# ========== УПРАВЛЕНИЕ КАТЕГОРИЯМИ ==========
-
 @dp.message(F.text == "🏷️ Категории")
 async def manage_categories(message: types.Message, state: FSMContext):
     await state.clear()
-    await get_or_create_user(message)
+    user_id = await get_or_create_user(message)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="cat_add")],
