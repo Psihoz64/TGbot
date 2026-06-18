@@ -63,17 +63,20 @@ def get_main_keyboard():
     )
     return keyboard
 
-def get_number_keyboard():
-    """Клавиатура с цифрами для ввода суммы"""
+def get_number_keyboard(current_input: str = ""):
+    """Клавиатура с цифрами для ввода суммы с отображением текущего ввода"""
+    display_text = f"💰 {current_input if current_input else '0'}" if current_input else "💰 Введите сумму"
+    
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
             [KeyboardButton(text="4"), KeyboardButton(text="5"), KeyboardButton(text="6")],
             [KeyboardButton(text="7"), KeyboardButton(text="8"), KeyboardButton(text="9")],
-            [KeyboardButton(text="0"), KeyboardButton(text="."), KeyboardButton(text="❌ Отмена")],
+            [KeyboardButton(text="0"), KeyboardButton(text="."), KeyboardButton(text="✅ Готово")],
+            [KeyboardButton(text="❌ Отмена")],
         ],
         resize_keyboard=True,
-        input_field_placeholder="Введите сумму..."
+        input_field_placeholder=display_text
     )
     return keyboard
 
@@ -260,12 +263,71 @@ async def process_amount(message: types.Message, state: FSMContext):
         await message.answer("❌ Операция отменена", reply_markup=get_main_keyboard())
         return
 
+    # Если пользователь нажал "✅ Готово"
+    if message.text == "✅ Готово":
+        data = await state.get_data()
+        current_input = data.get('current_amount_input', '')
+        
+        if not current_input:
+            await message.answer(
+                "❌ Введите сумму перед подтверждением.",
+                reply_markup=get_number_keyboard('')
+            )
+            return
+        
+        try:
+            amount = float(current_input.replace(',', '.'))
+            if amount <= 0:
+                raise ValueError("Сумма должна быть больше 0")
+            
+            await state.update_data(amount=amount)
+            data = await state.get_data()
+            transaction_type = data.get('transaction_type')
+
+            if transaction_type == 'income':
+                await save_transaction(message, state, description='')
+            else:
+                await state.set_state(AddTransaction.entering_description)
+                await message.answer(
+                    "📝 Введите описание (или отправьте '-' для пропуска):",
+                    reply_markup=get_main_keyboard()
+                )
+        except ValueError:
+            await message.answer(
+                "❌ Неверный формат. Введите число, например: 1500 или 1500.50",
+                reply_markup=get_number_keyboard('')
+            )
+        return
+
+    # Если это цифра или точка — добавляем к текущему вводу
+    if message.text and (message.text.isdigit() or message.text == '.'):
+        data = await state.get_data()
+        current_input = data.get('current_amount_input', '')
+        
+        # Ограничиваем длину ввода (например, 10 символов)
+        if len(current_input) < 10:
+            current_input += message.text
+        else:
+            await message.answer("⚠️ Слишком длинное число. Максимум 10 символов.")
+            return
+        
+        await state.update_data(current_amount_input=current_input)
+        
+        # Показываем обновлённую клавиатуру с текущим вводом
+        await message.answer(
+            f"💰 Текущая сумма: {current_input}",
+            reply_markup=get_number_keyboard(current_input)
+        )
+        return
+
+    # Если пользователь ввёл число вручную (не через кнопки)
     try:
         amount = float(message.text.replace(',', '.'))
         if amount <= 0:
             raise ValueError("Сумма должна быть больше 0")
 
         await state.update_data(amount=amount)
+        await state.update_data(current_amount_input='')
         data = await state.get_data()
         transaction_type = data.get('transaction_type')
 
@@ -280,58 +342,8 @@ async def process_amount(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer(
             "❌ Неверный формат. Введите число, например: 1500 или 1500.50",
-            reply_markup=get_number_keyboard()
+            reply_markup=get_number_keyboard('')
         )
-
-async def save_transaction(message: types.Message, state: FSMContext, description: str = ''):
-    data = await state.get_data()
-    db = get_db()
-
-    user = db.query(User).filter_by(telegram_id=message.from_user.id).first()
-
-    if not user:
-        await state.clear()
-        await message.answer("❌ Ошибка: пользователь не найден. Выполните /start")
-        db.close()
-        return
-
-    transaction = Transaction(
-        user_id=user.id,
-        category_type=data.get('category_source'),
-        category_id=data.get('category_id'),
-        amount=data.get('amount'),
-        type=data.get('transaction_type'),
-        description=description
-    )
-    db.add(transaction)
-    db.commit()
-
-    category_name = "Без категории"
-    category_emoji = "📌"
-
-    if data.get('category_source') == 'default':
-        category = db.query(DefaultCategory).filter_by(id=data.get('category_id')).first()
-        if category:
-            category_name = category.name
-            category_emoji = category.emoji
-    else:
-        category = db.query(CustomCategory).filter_by(id=data.get('category_id')).first()
-        if category:
-            category_name = category.name
-            category_emoji = category.emoji
-
-    db.close()
-    await state.clear()
-
-    emoji = "📉" if data.get('transaction_type') == 'expense' else "📈"
-    await message.answer(
-        f"✅ {'Расход' if data.get('transaction_type') == 'expense' else 'Доход'} добавлен!\n\n"
-        f"{emoji} {category_emoji} {category_name}\n"
-        f"💰 {data.get('amount', 0):.2f} руб.\n"
-        f"📝 {description if description else 'Без описания'}"
-    )
-
-    await message.answer("Что делаем дальше?", reply_markup=get_main_keyboard())
 
 @dp.message(AddTransaction.entering_description)
 async def process_description(message: types.Message, state: FSMContext):
