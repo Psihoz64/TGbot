@@ -215,10 +215,11 @@ async def show_category_selection(message: types.Message, state: FSMContext, tra
 @dp.callback_query(AddTransaction.choosing_category)
 async def process_category_selection(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
+    chat_id = callback.from_user.id
 
     if callback.data == "cancel":
         await callback.message.delete()
-        await callback.message.answer("❌ Операция отменена")
+        await callback.bot.send_message(chat_id, "❌ Операция отменена")
         await state.clear()
         return
 
@@ -231,7 +232,8 @@ async def process_category_selection(callback: types.CallbackQuery, state: FSMCo
 
     await callback.message.delete()
     await state.set_state(AddTransaction.entering_amount)
-    await callback.message.answer(
+    await callback.bot.send_message(
+        chat_id,
         "💰 Введите сумму:\n(можно использовать точку для копеек, например: 1500.50)"
     )
 
@@ -555,56 +557,12 @@ async def manage_categories(message: types.Message, state: FSMContext):
     await message.answer("🏷️ **Управление категориями**\n\nВыберите действие:",
                          reply_markup=keyboard, parse_mode="Markdown")
 
-@dp.callback_query(ManageCategory.choosing_action)
-async def process_category_action(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    action = callback.data
-
-    if action == "cancel":
-        await callback.message.delete()
-        await callback.message.answer("❌ Закрыто")
-        await state.clear()
-        return
-
-    db = get_db()
-    user = db.query(User).filter_by(telegram_id=callback.from_user.id).first()
-    db.close()
-
-    if not user:
-        await callback.message.answer("❌ Пользователь не найден. Отправьте /start")
-        await state.clear()
-        return
-
-    if action == "cat_list":
-        await show_categories(callback.message, user.id)
-        await state.clear()
-        return
-
-    if action == "cat_add":
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📉 Расход", callback_data="type_expense")],
-            [InlineKeyboardButton(text="📈 Доход", callback_data="type_income")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
-        ])
-        await state.set_state(ManageCategory.choosing_type_for_category)
-        await callback.message.edit_text(
-            "📂 Выберите тип категории:",
-            reply_markup=keyboard
-        )
-        return
-
-    if action == "cat_delete":
-        await show_categories_for_deletion(callback.message, state, user.id)
-        return
-
-async def show_categories(message: types.Message, user_id: int = None):
-    if user_id is None:
-        user_id = await get_or_create_user(message)
-
+# Вспомогательные функции для отправки сообщений без цитирования
+async def show_categories(chat_id: int, bot: Bot, user_id: int):
     categories = await get_all_categories(user_id)
 
     if not categories:
-        await message.answer("📭 У вас пока нет категорий")
+        await bot.send_message(chat_id, "📭 У вас пока нет категорий")
         return
 
     expense_cats = [c for c in categories if c['type'] == 'expense']
@@ -629,15 +587,16 @@ async def show_categories(message: types.Message, user_id: int = None):
         text += "\n📈 Доходов: нет\n"
 
     text += "\n\n⭐ - стандартная категория (защищена)\n✏️ - ваша категория"
-    await message.answer(text, parse_mode="Markdown")
+    await bot.send_message(chat_id, text, parse_mode="Markdown")
 
-async def show_categories_for_deletion(message: types.Message, state: FSMContext, user_id: int):
+async def show_categories_for_deletion(chat_id: int, bot: Bot, state: FSMContext, user_id: int):
     db = get_db()
     categories = db.query(CustomCategory).filter_by(user_id=user_id).all()
     db.close()
 
     if not categories:
-        await message.answer(
+        await bot.send_message(
+            chat_id,
             "📭 Нет пользовательских категорий для удаления.\n"
             "Стандартные категории защищены от удаления."
         )
@@ -658,28 +617,67 @@ async def show_categories_for_deletion(message: types.Message, state: FSMContext
 
     await state.set_state(ManageCategory.deleting_category)
 
-    try:
-        await message.edit_text(
-            "🗑️ **Выберите категорию для удаления:**\n"
-            "(показываются только созданные вами категории)",
-            reply_markup=keyboard,
-            parse_mode="Markdown"
+    await bot.send_message(
+        chat_id,
+        "🗑️ **Выберите категорию для удаления:**\n"
+        "(показываются только созданные вами категории)",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(ManageCategory.choosing_action)
+async def process_category_action(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    action = callback.data
+    chat_id = callback.from_user.id
+
+    if action == "cancel":
+        await callback.message.delete()
+        await callback.bot.send_message(chat_id, "❌ Закрыто")
+        await state.clear()
+        return
+
+    db = get_db()
+    user = db.query(User).filter_by(telegram_id=callback.from_user.id).first()
+    db.close()
+
+    if not user:
+        await callback.bot.send_message(chat_id, "❌ Пользователь не найден. Отправьте /start")
+        await state.clear()
+        return
+
+    if action == "cat_list":
+        await show_categories(chat_id, callback.bot, user.id)
+        await state.clear()
+        return
+
+    if action == "cat_add":
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📉 Расход", callback_data="type_expense")],
+            [InlineKeyboardButton(text="📈 Доход", callback_data="type_income")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
+        ])
+        await state.set_state(ManageCategory.choosing_type_for_category)
+        await callback.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=callback.message.message_id,
+            text="📂 Выберите тип категории:",
+            reply_markup=keyboard
         )
-    except Exception:
-        await message.answer(
-            "🗑️ **Выберите категорию для удаления:**\n"
-            "(показываются только созданные вами категории)",
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
+        return
+
+    if action == "cat_delete":
+        await show_categories_for_deletion(chat_id, callback.bot, state, user.id)
+        return
 
 @dp.callback_query(ManageCategory.deleting_category)
 async def confirm_delete_category(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
+    chat_id = callback.from_user.id
 
     if callback.data == "cancel":
         await callback.message.delete()
-        await callback.message.answer("❌ Отменено")
+        await callback.bot.send_message(chat_id, "❌ Отменено")
         await state.clear()
         return
 
@@ -690,9 +688,17 @@ async def confirm_delete_category(callback: types.CallbackQuery, state: FSMConte
     if category:
         db.delete(category)
         db.commit()
-        await callback.message.edit_text(f"✅ Категория '{category.emoji} {category.name}' удалена")
+        await callback.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=callback.message.message_id,
+            text=f"✅ Категория '{category.emoji} {category.name}' удалена"
+        )
     else:
-        await callback.message.edit_text("❌ Категория не найдена")
+        await callback.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=callback.message.message_id,
+            text="❌ Категория не найдена"
+        )
 
     db.close()
     await state.clear()
@@ -700,10 +706,11 @@ async def confirm_delete_category(callback: types.CallbackQuery, state: FSMConte
 @dp.callback_query(ManageCategory.choosing_type_for_category)
 async def process_category_type(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
+    chat_id = callback.from_user.id
 
     if callback.data == "cancel":
         await callback.message.delete()
-        await callback.message.answer("❌ Отменено")
+        await callback.bot.send_message(chat_id, "❌ Отменено")
         await state.clear()
         return
 
@@ -711,7 +718,8 @@ async def process_category_type(callback: types.CallbackQuery, state: FSMContext
     await state.update_data(transaction_type=transaction_type)
 
     await callback.message.delete()
-    await callback.message.answer(
+    await callback.bot.send_message(
+        chat_id,
         f"📝 Введите название новой категории для {'расходов' if transaction_type == 'expense' else 'доходов'}:"
     )
     await state.set_state(ManageCategory.entering_name)
