@@ -557,8 +557,8 @@ async def manage_categories(message: types.Message, state: FSMContext):
     await message.answer("🏷️ **Управление категориями**\n\nВыберите действие:",
                          reply_markup=keyboard, parse_mode="Markdown")
 
-# Вспомогательные функции для отправки сообщений без цитирования
 async def show_categories(chat_id: int, bot: Bot, user_id: int):
+    """Показывает список категорий без цитирования"""
     categories = await get_all_categories(user_id)
 
     if not categories:
@@ -590,6 +590,7 @@ async def show_categories(chat_id: int, bot: Bot, user_id: int):
     await bot.send_message(chat_id, text, parse_mode="Markdown")
 
 async def show_categories_for_deletion(chat_id: int, bot: Bot, state: FSMContext, user_id: int):
+    """Показывает пользовательские категории для удаления без цитирования"""
     db = get_db()
     categories = db.query(CustomCategory).filter_by(user_id=user_id).all()
     db.close()
