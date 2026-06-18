@@ -35,7 +35,7 @@ class RetryAiohttpSession(AiohttpSession):
 
 # Инициализация бота
 session = RetryAiohttpSession()
-bot = Bot(token=os.getenv('BOT_TOKEN'), session=session, request_timeout=90)
+bot = Bot(token=os.getenv('BOT_TOKEN'), session=session)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
